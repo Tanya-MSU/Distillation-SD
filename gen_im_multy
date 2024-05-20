@@ -1,0 +1,96 @@
+# Установите необходимые библиотеки
+!pip install torch torchvision transformers diffusers accelerate safetensors pycocotools
+
+import torch
+from torch import nn
+from torchvision import transforms
+from diffusers import StableDiffusionPipeline
+from huggingface_hub import login
+import numpy as np
+from PIL import Image
+from datetime import datetime
+import os
+from pycocotools.coco import COCO
+import requests
+import zipfile
+import shutil
+from multiprocessing import Pool, cpu_count
+
+# Введите ваш токен Hugging Face
+token = "ВАШ_ТОКЕН_ЗДЕСЬ"  # Замените на ваш токен
+login(token)
+
+# Загрузите модель Stable Diffusion 1.5
+pipe = StableDiffusionPipeline.from_pretrained(
+    "runwayml/stable-diffusion-v1-5",
+    torch_dtype=torch.float16,
+    use_safetensors=True,
+    use_auth_token=token
+)
+pipe.to("cuda")
+
+# Путь к файлу аннотаций COCO
+coco_annotation_file = 'annotations/captions_train2017.json'
+
+# Проверка наличия файла, если его нет, скачиваем
+if not os.path.exists(coco_annotation_file):
+    url = 'http://images.cocodataset.org/annotations/annotations_trainval2017.zip'
+    r = requests.get(url, stream=True)
+    with open('annotations_trainval2017.zip', 'wb') as f:
+        for chunk in r.iter_content(chunk_size=1024):
+            if chunk:
+                f.write(chunk)
+    # Извлечение нужного файла из архива
+    with zipfile.ZipFile('annotations_trainval2017.zip', 'r') as zip_ref:
+        zip_ref.extract('annotations/captions_train2017.json', '.')
+
+# Загрузка аннотаций COCO
+coco = COCO(coco_annotation_file)
+
+# Получение всех аннотаций
+anns = coco.loadAnns(coco.getAnnIds())
+captions = [ann['caption'] for ann in anns]
+
+# Ограничим количество запросов до первых 100
+captions = captions[:100]
+
+# Вывод количества загруженных аннотаций
+print(f"Загружено {len(captions)} текстовых запросов из COCO.")
+
+# Функция для генерации изображения и сохранения шума
+def generate_and_save(args):
+    prompt, pipe, output_dir, noise_dir = args
+    noise = torch.randn((1, pipe.unet.config.in_channels, pipe.unet.config.sample_size, pipe.unet.config.sample_size), device="cuda", dtype=torch.float16)
+    with torch.no_grad():
+        images = pipe(prompt=prompt, latents=noise).images[0]
+
+    # Создайте уникальное имя файла
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")
+    image_path = os.path.join(output_dir, f"generated_image_{timestamp}.png")
+    noise_path = os.path.join(noise_dir, f"generated_noise_{timestamp}.npy")
+
+    # Сохраните изображение
+    images.save(image_path)
+
+    # Сохраните шум
+    np.save(noise_path, noise.cpu().numpy())
+
+    return image_path, noise_path
+
+# Создайте папки для сохранения изображений и шума, если они не существуют
+output_dir = "generated_images"
+noise_dir = "generated_noise"
+os.makedirs(output_dir, exist_ok=True)
+os.makedirs(noise_dir, exist_ok=True)
+
+# Создаем список задач для multiprocessing
+tasks = [(prompt, pipe, output_dir, noise_dir) for prompt in captions]
+
+# Используем multiprocessing для выполнения задач
+with Pool(cpu_count()) as pool:
+    results = pool.map(generate_and_save, tasks)
+
+for result in results:
+    image_path, noise_path = result
+    print(f"Изображение сохранено по пути: {image_path}")
+    print(f"Шум сохранен по пути: {noise_path}")
