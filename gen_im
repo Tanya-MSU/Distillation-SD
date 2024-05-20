@@ -1,0 +1,88 @@
+!pip install torch torchvision transformers diffusers accelerate safetensors pycocotools
+​
+import torch
+from torch import nn
+from torchvision import transforms
+from diffusers import StableDiffusionPipeline
+from huggingface_hub import login
+import numpy as np
+from PIL import Image
+from datetime import datetime
+import os
+from pycocotools.coco import COCO
+import requests
+import zipfile
+​
+# токен Hugging Face
+token = "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"  # Замените на ваш токен
+login(token)
+​
+# Загрузка модели Stable Diffusion 1.5
+pipe = StableDiffusionPipeline.from_pretrained(
+    "runwayml/stable-diffusion-v1-5",
+    torch_dtype=torch.float16,
+    use_safetensors=True,
+    use_auth_token=token
+)
+pipe.to("cuda")
+​
+coco_annotation_file = 'annotations/captions_train2017.json'
+​
+if not os.path.exists(coco_annotation_file):
+    url = 'http://images.cocodataset.org/annotations/annotations_trainval2017.zip'
+    r = requests.get(url, stream=True)
+    with open('annotations_trainval2017.zip', 'wb') as f:
+        for chunk in r.iter_content(chunk_size=1024):
+            if chunk:
+                f.write(chunk)
+
+    with zipfile.ZipFile('annotations_trainval2017.zip', 'r') as zip_ref:
+        zip_ref.extract('annotations/captions_train2017.json', '.')
+​
+# Загрузка аннотаций COCO
+coco = COCO(coco_annotation_file)
+​
+# Получение всех аннотаций
+anns = coco.loadAnns(coco.getAnnIds())
+captions = [ann['caption'] for ann in anns]
+​
+# Вывод количества загруженных аннотаций
+print(f"Загружено {len(captions)} текстовых запросов из COCO.")
+​
+# Функция для генерации изображения и сохранения шума
+def generate_and_save(prompt, pipe, output_dir, noise_dir):
+    noise = torch.randn((1, pipe.unet.config.in_channels, pipe.unet.config.sample_size, pipe.unet.config.sample_size), device="cuda", dtype=torch.float16)
+    with torch.no_grad():
+        images = pipe(prompt=prompt, latents=noise).images[0]
+​
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")
+    image_path = os.path.join(output_dir, f"generated_image_{timestamp}.png")
+    noise_path = os.path.join(noise_dir, f"generated_noise_{timestamp}.npy")
+​
+    images.save(image_path)
+​
+    np.save(noise_path, noise.cpu().numpy())
+​
+    return image_path, noise_path
+​
+# папки для сохранения изображений и шума, если они не существуют
+output_dir = "generated_images"
+noise_dir = "generated_noise"
+os.makedirs(output_dir, exist_ok=True)
+os.makedirs(noise_dir, exist_ok=True)
+​
+batch_size = 250
+​
+num_batches = len(captions) // batch_size + (1 if len(captions) % batch_size != 0 else 0)
+​
+for batch_idx in range(num_batches):
+    start_idx = batch_idx * batch_size
+    end_idx = min((batch_idx + 1) * batch_size, len(captions))
+​
+    batch_prompts = captions[start_idx:end_idx]
+​
+    for i, prompt in enumerate(batch_prompts):
+        image_path, noise_path = generate_and_save(prompt, pipe, output_dir, noise_dir)
+        print(f"[Batch {batch_idx+1}/{num_batches}, Prompt {i+1}/{len(batch_prompts)}] Изображение сохранено по пути: {image_path}")
+        print(f"Шум сохранен по пути: {noise_path}")
+​
