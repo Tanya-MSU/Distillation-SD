@@ -17,7 +17,7 @@ import shutil
 from multiprocessing import Pool, cpu_count
 
 # Введите ваш токен Hugging Face
-token = "ВАШ_ТОКЕН_ЗДЕСЬ"  # Замените на ваш токен
+token = "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"  # Замените на ваш токен
 login(token)
 
 # Загрузите модель Stable Diffusion 1.5
